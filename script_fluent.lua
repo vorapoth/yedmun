@@ -63,6 +63,17 @@ local lastSaleLabel = nil
 -- โบนัสสกิลตลาด (ตอนนี้ +5) เลยเก็บเป็นค่าคงที่ปรับได้ผ่าน UI แทน
 local marketSkillBonus = 5
 
+-- หน่วงเวลาแบบสุ่ม ±jitterPercent เพื่อลดความเป็นบอท (0 = ปิด)
+local jitterPercent = 0.3
+pcall(function() math.randomseed(os.clock() * 1e6 + tick() % 1 * 1e6) end)
+local function jwait(base)
+    if not base or base <= 0 then task.wait(base) return end
+    if jitterPercent <= 0 then task.wait(base) return end
+    local f = 1 + (math.random() * 2 - 1) * jitterPercent
+    if f < 0.05 then f = 0.05 end
+    task.wait(base * f)
+end
+
 local function calcSellValue()
     local success, total = pcall(function()
         local totalValue = 0
@@ -258,7 +269,7 @@ local CONFIG_FOLDER   = "PrivateScript"
 local CONFIG_PATH     = CONFIG_FOLDER .. "/full_config.json"
 -- URL ที่โฮสต์สคริปต์เวอร์ชันล่าสุด (autoexec จะโหลดจากตรงนี้ตอน rejoin)
 -- << ถ้าเปลี่ยนที่โฮสต์ ให้แก้บรรทัดนี้
-local AUTOEXEC_URL    = "https://raw.githubusercontent.com/slimeData7/script/refs/heads/main/0"
+local AUTOEXEC_URL    = "https://raw.githubusercontent.com/vorapoth/yedmun/main/script_fluent.lua"
 local AUTOEXEC_NAME   = "PrivateScript_autoload.lua"
 local fileApiOk       = (writefile and readfile and isfile) and true or false
 local savedConfigData = nil
@@ -283,6 +294,7 @@ local function buildConfigData()
         AutoSell    = CONFIG.AutoSell.Enabled,
         SmartSell   = { Enabled = CONFIG.SmartSell.Enabled, MinPercent = CONFIG.SmartSell.MinPercent },
         MarketSkillBonus = marketSkillBonus,
+        JitterPercent = math.floor(jitterPercent * 100),
         RunSpeed    = { Enabled = CONFIG.RunSpeed.Enabled, Speed = CONFIG.RunSpeed.Speed },
         AutoConquer = {
             Enabled = CONFIG.AutoConquer.Enabled, Mode = CONFIG.AutoConquer.Mode,
@@ -358,6 +370,7 @@ local function applyConfig()
         setOpt("SmartSellToggle", d.SmartSell.Enabled)
     end
     setOpt("MarketSkillBonus", d.MarketSkillBonus)
+    setOpt("JitterPercent", d.JitterPercent)
     if d.RunSpeed then
         setOpt("RunSpeedValue", d.RunSpeed.Speed)
         setOpt("RunSpeedToggle", d.RunSpeed.Enabled)
@@ -1185,6 +1198,17 @@ FeatureTab:AddSlider("ArmyIndex", {
 })
 pcall(function() Fluent.Options.ArmyIndex:SetValue(2) end)
 
+FeatureTab:AddSlider("JitterPercent", {
+    Title = "Timing Jitter %",
+    Description = "สุ่มหน่วงเวลา ±% ลดความเป็นบอท (0 = ปิด)",
+    Default = 30,
+    Min = 0,
+    Max = 50,
+    Rounding = 0,
+    Callback = function(Value) jitterPercent = math.floor(Value) / 100 end,
+})
+pcall(function() Fluent.Options.JitterPercent:SetValue(30) end)
+
 -- ===== Quests Tab =====
 addHeader(QuestsTab, "Active Quests")
 local questParagraph = QuestsTab:AddParagraph({ Title = "Quests", Content = "Loading..." })
@@ -1367,14 +1391,14 @@ end)
 -- Auto Collect
 task.spawn(function()
     while true do
-        task.wait(1.5)
+        jwait(1.5)
         if not CONFIG.AutoCollect.Enabled then continue end
         local buildings = getCollectableBuildings(CONFIG.AutoCollect.Filter)
         for _, building in ipairs(buildings) do
             if not CONFIG.AutoCollect.Enabled then break end
             pcall(function() dataRemoteEvent:FireServer({ building, ";" }) end)
             collectCount = collectCount + 1
-            task.wait(0.1)
+            jwait(0.1)
         end
         if #buildings > 0 then
             pcall(function()
@@ -1387,7 +1411,7 @@ end)
 -- Auto Sell All
 task.spawn(function()
     while true do
-        task.wait(5)
+        jwait(5)
         if CONFIG.AutoSell.Enabled and not CONFIG.SmartSell.Enabled then
             performAutoSell()
         end
@@ -1397,7 +1421,7 @@ end)
 -- Smart Sell
 task.spawn(function()
     while true do
-        task.wait(5)
+        jwait(5)
         if CONFIG.SmartSell.Enabled and not CONFIG.AutoSell.Enabled then
             performSmartSell(CONFIG.SmartSell.MinPercent)
         end
@@ -1407,7 +1431,7 @@ end)
 -- Auto Buy Black Market
 task.spawn(function()
     while true do
-        task.wait(CONFIG.BMCheckDelay)
+        jwait(CONFIG.BMCheckDelay)
         if not CONFIG.BlackMarket.Enabled then continue end
         if not CONFIG.BlackMarket.SelectAll and #CONFIG.BlackMarket.Selected == 0 then continue end
         if not blackMarketBridge then continue end
@@ -1420,7 +1444,7 @@ task.spawn(function()
                     blackMarketBridge:Fire({ shop = "BlackMarket", item = item.name })
                 end)
                 recordPurchase(item.name)
-                task.wait(0.2)
+                jwait(0.2)
             end
         end
     end
@@ -1429,7 +1453,7 @@ end)
 -- Auto Buy Shops
 task.spawn(function()
     while true do
-        task.wait(CONFIG.Delay)
+        jwait(CONFIG.Delay)
         if not shopBridge then continue end
         for _, shopName in ipairs(shopNames) do
             local shopConfig = CONFIG.Shops[shopName]
@@ -1445,7 +1469,7 @@ task.spawn(function()
                         shopBridge:Fire({ shop = shopName, item = item.name })
                     end)
                     recordPurchase(item.name)
-                    task.wait(0.2)
+                    jwait(0.2)
                 end
             end
         end
@@ -1455,7 +1479,7 @@ end)
 -- Auto Conquer
 task.spawn(function()
     while true do
-        task.wait(2)
+        jwait(2)
         if not CONFIG.AutoConquer.Enabled then continue end
         if CONFIG.AutoConquer.Mode == "None" then continue end
         if normalRaidActive or toxicRaidActive then continue end
@@ -1511,7 +1535,7 @@ task.spawn(function()
     local lastKoth    = nil
     local raidFiredAt = 0
     while true do
-        task.wait(3)
+        jwait(3)
         local koth     = getKingOfTheHillBase()
         local isActive = koth ~= nil
         if isActive ~= normalRaidActive then
@@ -1545,7 +1569,7 @@ task.spawn(function()
     local lastToxicKoth    = nil
     local toxicRaidFiredAt = 0
     while true do
-        task.wait(3)
+        jwait(3)
         local toxicKoth = getToxicKingOfTheHillBase()
         local isActive  = toxicKoth ~= nil
         if isActive ~= toxicRaidActive then
