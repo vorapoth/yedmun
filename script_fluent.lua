@@ -255,6 +255,7 @@ local CONFIG = {
     SmartSell     = { Enabled = false, MinPercent = 10 },
     AntiAfk       = { Enabled = false },
     AutoRejoin    = { Enabled = false },
+    ToxicUseArmy  = true,
 }
 
 local shopNames = {}
@@ -307,6 +308,7 @@ local function buildConfigData()
         },
         AutoRaid      = CONFIG.AutoRaid.Enabled,
         AutoToxicRaid = CONFIG.AutoToxicRaid.Enabled,
+        ToxicUseArmy  = CONFIG.ToxicUseArmy,
         BlackMarket = {
             Enabled   = CONFIG.BlackMarket.Enabled,
             Selected  = CONFIG.BlackMarket.Selected,
@@ -388,6 +390,7 @@ local function applyConfig()
     end
     setOpt("AutoRaidToggle", d.AutoRaid)
     setOpt("AutoToxicRaidToggle", d.AutoToxicRaid)
+    setOpt("ToxicUseArmyToggle", d.ToxicUseArmy)
     if d.BlackMarket then
         setOpt("BMItems", d.BlackMarket.SelectAll and { All = true } or arrayToSet(d.BlackMarket.Selected))
         setOpt("BMToggle", d.BlackMarket.Enabled)
@@ -1169,6 +1172,13 @@ FeatureTab:AddToggle("AutoToxicRaidToggle", {
     end,
 })
 
+FeatureTab:AddToggle("ToxicUseArmyToggle", {
+    Title = "Toxic: ใช้ Army (U) แทน Rocket (V)",
+    Description = "เปิด = ส่งกองทัพ U / ปิด = ยิง rocket V (ถ้า army ยึดไม่ได้ให้ปิดกลับไป rocket)",
+    Default = CONFIG.ToxicUseArmy,
+    Callback = function(Value) CONFIG.ToxicUseArmy = Value end,
+})
+
 addHeader(FeatureTab, "Movement")
 
 FeatureTab:AddToggle("RunSpeedToggle", {
@@ -1338,11 +1348,11 @@ addHeader(ConfigTab, "Auto Execute")
 
 ConfigTab:AddParagraph({
     Title = "วิธีใช้",
-    Content = "ติดตั้งให้ executor โหลดสคริปต์เองตอนเข้าเกม (ใช้คู่กับ Auto Rejoin)\nสคริปต์จะถูกโหลดจาก URL: เวอร์ชันล่าสุดที่คุณโฮสต์ไว้",
+    Content = "มี 2 โหมด:\n• โหลดจาก GitHub = autoexec ดึงสคริปต์จาก URL ทุกครั้ง (อัปเดตอัตโนมัติ ต้องต่อเน็ต+repo public)\n• เซฟลงเครื่อง = ดึง source ครั้งเดียวเก็บไว้ในเครื่อง แล้วรันจากไฟล์ local (ไม่ต้องต่อเน็ต/ไม่เจอ cache แต่ต้องกดติดตั้งใหม่ทุกครั้งที่อยากอัปเดต)",
 })
 
 ConfigTab:AddButton({
-    Title = "ติดตั้ง Auto-Execute",
+    Title = "Auto-Execute: โหลดจาก GitHub (อัปเดตเอง)",
     Callback = function()
         local loader = 'loadstring(game:HttpGet("' .. AUTOEXEC_URL .. '"))()'
         local wrote = false
@@ -1357,11 +1367,39 @@ ConfigTab:AddButton({
         end
         if setclipboard then pcall(function() setclipboard(loader) end) end
         if wrote then
-            notifyUser("Autoexec", "เขียนไฟล์ลงโฟลเดอร์ autoexec แล้ว + ก็อปโลดเดอร์ลงคลิปบอร์ด")
+            notifyUser("Autoexec", "เขียน loader ลง autoexec แล้ว (โหมดโหลดจาก GitHub)")
         elseif setclipboard then
-            notifyUser("Autoexec", "เขียนไฟล์ไม่ได้ - ก็อปโลดเดอร์ลงคลิปบอร์ดให้แล้ว เอาไปวางใน autoexec ของ executor เอง")
+            notifyUser("Autoexec", "เขียนไฟล์ไม่ได้ - ก็อป loader ลงคลิปบอร์ดให้แล้ว เอาไปวางใน autoexec เอง")
         else
-            notifyUser("Autoexec", "executor นี้เขียนไฟล์/คลิปบอร์ดไม่ได้ - ตั้ง autoexec เองด้วยโลดเดอร์ loadstring(game:HttpGet(URL))()")
+            notifyUser("Autoexec", "executor นี้เขียนไฟล์/คลิปบอร์ดไม่ได้")
+        end
+    end,
+})
+
+ConfigTab:AddButton({
+    Title = "Auto-Execute: เซฟลงเครื่อง (local, ไม่ต้องต่อเน็ต)",
+    Callback = function()
+        if not writefile then
+            notifyUser("Autoexec", "executor นี้เขียนไฟล์ไม่ได้")
+            return
+        end
+        local ok, src = pcall(function() return game:HttpGet(AUTOEXEC_URL) end)
+        if not ok or type(src) ~= "string" or #src < 200 then
+            notifyUser("Autoexec", "ดึง source จาก URL ไม่สำเร็จ - เช็ก AUTOEXEC_URL ก่อน")
+            return
+        end
+        local wrote = false
+        pcall(function()
+            if makefolder and isfolder and not isfolder("autoexec") then
+                makefolder("autoexec")
+            end
+            writefile("autoexec/" .. AUTOEXEC_NAME, src)
+            wrote = true
+        end)
+        if wrote then
+            notifyUser("Autoexec", "เซฟสคริปต์เต็มลง autoexec แล้ว - ต่อไปรันจากไฟล์ในเครื่อง")
+        else
+            notifyUser("Autoexec", "เขียนไฟล์ไม่สำเร็จ")
         end
     end,
 })
@@ -1649,12 +1687,19 @@ task.spawn(function()
             task.wait(1)
         end
         if tick() - toxicRaidFiredAt >= CONQUER_COOLDOWN then
-            local fired = sendTroopsToToxicPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
+            local fired, how
+            if CONFIG.ToxicUseArmy then
+                fired = sendTroopsToPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
+                how = "army U"
+            else
+                fired = sendTroopsToToxicPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
+                how = "rocket V"
+            end
             toxicRaidFiredAt = tick()
             if fired then
                 deploysSent = deploysSent + 1
                 deployedThisRaid = true
-                logEvent("Deploy sent (toxic, army " .. tostring(CONFIG.AutoConquer.ArmyIndex) .. ")")
+                logEvent("Deploy sent (toxic, " .. how .. ", idx " .. tostring(CONFIG.AutoConquer.ArmyIndex) .. ")")
             else
                 logEvent("Toxic deploy SKIPPED (no armyIndex)")
             end
