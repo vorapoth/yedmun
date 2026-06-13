@@ -14,7 +14,6 @@ local ClientData = require(RS.client.modules.ClientData)
 local ResourcesConfig = require(RS.shared.config.ResourcesConfig)
 local getSkillsData = require(RS.util.getSkillsData)
 local LocalPlayer = require(RS.util.LocalPlayer)
-local QuestsConfig = require(RS.shared.config.QuestsConfig)
 
 local Fluent
 do
@@ -216,23 +215,29 @@ end
 --   toxic zone army    = { { armyIndex = N, capturePoint = point }, "V" }   <- toxic ใช้ identifier ต่าง!
 -- ส่ง capturePoint (Model ของจุดยึด) ตรง ๆ ตามที่เกมยิงจริง
 local function sendTroopsToPoint(capturePoint, armyIndex)
-    if not capturePoint then return end
-    pcall(function()
+    if not capturePoint then return false end
+    armyIndex = tonumber(armyIndex)
+    if not armyIndex then return false end
+    local ok = pcall(function()
         dataRemoteEvent:FireServer({
             { armyIndex = armyIndex, capturePoint = capturePoint },
             "U"
         })
     end)
+    return ok
 end
 
 local function sendTroopsToToxicPoint(capturePoint, armyIndex)
-    if not capturePoint then return end
-    pcall(function()
+    if not capturePoint then return false end
+    armyIndex = tonumber(armyIndex)
+    if not armyIndex then return false end  -- กัน "V" ไม่มี armyIndex = กลายเป็น rocket
+    local ok = pcall(function()
         dataRemoteEvent:FireServer({
             { armyIndex = armyIndex, capturePoint = capturePoint },
             "V"
         })
     end)
+    return ok
 end
 
 local CONFIG = {
@@ -409,6 +414,16 @@ local antiAfkConnection = nil
 
 local normalRaidActive  = false
 local toxicRaidActive   = false
+
+-- ===== Raid logs =====
+local raidsDetected      = 0
+local toxicRaidsDetected = 0
+local deploysSent        = 0
+local capturesSucceeded  = 0
+local logLines           = {}
+local logStatsLabel      = nil
+local logParagraph       = nil
+local LOG_MAX            = 25
 
 local cachedBuildings       = {}
 local cachedBuildingsFolder = nil
@@ -670,6 +685,27 @@ local function updateRaidLabel()
     end)
 end
 
+local function updateLogStats()
+    pcall(function()
+        if logStatsLabel then
+            logStatsLabel:Set(string.format(
+                "Raids: %d  |  Toxic: %d  |  Deploys: %d  |  Captures: %d",
+                raidsDetected, toxicRaidsDetected, deploysSent, capturesSucceeded))
+        end
+    end)
+end
+
+local function logEvent(msg)
+    local stamp = os.date("%H:%M:%S")
+    table.insert(logLines, 1, "[" .. stamp .. "] " .. msg)
+    while #logLines > LOG_MAX do table.remove(logLines) end
+    pcall(function()
+        if logParagraph and logParagraph.SetDesc then
+            logParagraph:SetDesc(table.concat(logLines, "\n"))
+        end
+    end)
+end
+
 -- ============================================================
 -- UI
 -- ============================================================
@@ -797,7 +833,7 @@ end
 local MainTab    = Window:AddTab({ Title = "Main",     Icon = "" })
 local ShopTab    = Window:AddTab({ Title = "Shop",     Icon = "" })
 local FeatureTab = Window:AddTab({ Title = "Features", Icon = "" })
-local QuestsTab  = Window:AddTab({ Title = "Quests",   Icon = "" })
+local LogsTab    = Window:AddTab({ Title = "Logs",     Icon = "" })
 local ConfigTab  = Window:AddTab({ Title = "Config",   Icon = "" })
 
 -- ป้ายแบบอัปเดตได้ (ห่อ AddParagraph ให้มี :Set เหมือน Rayfield เดิม)
@@ -1209,47 +1245,26 @@ FeatureTab:AddSlider("JitterPercent", {
 })
 pcall(function() Fluent.Options.JitterPercent:SetValue(30) end)
 
--- ===== Quests Tab =====
-addHeader(QuestsTab, "Active Quests")
-local questParagraph = QuestsTab:AddParagraph({ Title = "Quests", Content = "Loading..." })
+-- ===== Logs Tab =====
+addHeader(LogsTab, "Auto Raid Logs")
+logStatsLabel = makeLabel(LogsTab, "Summary", "Raids: 0  |  Toxic: 0  |  Deploys: 0  |  Captures: 0")
+logParagraph  = LogsTab:AddParagraph({ Title = "Recent Events", Content = "No events yet." })
 
-local function updateQuestsDisplay()
-    pcall(function()
-        local producer = ClientData.playerProducer
-        if not producer then return end
-        local questData = producer:getState().player.questData
-        local lines = {}
-        if not questData or not questData.activeQuests or next(questData.activeQuests) == nil then
-            lines = { "No active quests." }
-        else
-            for questId, data in pairs(questData.activeQuests) do
-                local config = QuestsConfig[questId]
-                local progress = data.progress or 0
-                local maxProgress = config and config.max or 1
-                local reward = config and config.reward or "?"
-                local description = config and config.description or questId
-                local completed = data.completed == true
-                local claimable = (progress >= maxProgress) and not completed
-                local status = completed and "[+]" or (claimable and "[!]" or "[ ]")
-                local state = completed and "Done" or (claimable and "Ready to claim" or "In progress")
-                table.insert(lines, string.format(
-                    "%s  %s  |  %d / %d  |  %s gems  |  %s",
-                    status, description, progress, maxProgress, tostring(reward), state))
-            end
-        end
-        if #lines == 0 then lines = { "No active quests." } end
+LogsTab:AddButton({
+    Title = "Clear Logs & Counters",
+    Callback = function()
+        logLines = {}
+        raidsDetected = 0
+        toxicRaidsDetected = 0
+        deploysSent = 0
+        capturesSucceeded = 0
+        updateLogStats()
         pcall(function()
-            if questParagraph.SetDesc then questParagraph:SetDesc(table.concat(lines, "\n")) end
+            if logParagraph and logParagraph.SetDesc then logParagraph:SetDesc("No events yet.") end
         end)
-    end)
-end
-
-task.spawn(function()
-    while true do
-        updateQuestsDisplay()
-        task.wait(5)
-    end
-end)
+        notifyUser("Logs", "ล้าง log แล้ว")
+    end,
+})
 
 -- ============================================================
 -- Config Tab (export / import)
@@ -1534,6 +1549,8 @@ end)
 task.spawn(function()
     local lastKoth    = nil
     local raidFiredAt = 0
+    local deployedThisRaid = false
+    local capturedLogged   = false
     while true do
         jwait(3)
         local koth     = getKingOfTheHillBase()
@@ -1543,23 +1560,46 @@ task.spawn(function()
             updateRaidLabel()
             if isActive then
                 notifyUser("Raid", "Raid event is now active!")
+                raidsDetected = raidsDetected + 1
+                logEvent("Normal raid detected")
+                updateLogStats()
             else
                 notifyUser("Raid", "Raid event ended.")
                 lastKoth    = nil
                 raidFiredAt = 0
+                deployedThisRaid = false
+                capturedLogged   = false
             end
         end
         if not CONFIG.AutoRaid.Enabled or not isActive then continue end
-        if koth:GetAttribute("Owner") == player.Name then continue end
+        if koth:GetAttribute("Owner") == player.Name then
+            if deployedThisRaid and not capturedLogged then
+                capturedLogged = true
+                capturesSucceeded = capturesSucceeded + 1
+                logEvent("Normal raid CAPTURED")
+                updateLogStats()
+            end
+            continue
+        end
         if lastKoth ~= koth then
             lastKoth = koth
+            deployedThisRaid = false
+            capturedLogged   = false
             notifyUser("Auto Raid", "Raid detected! Teleporting...")
             teleportToInstance(koth)
             task.wait(1)
         end
         if tick() - raidFiredAt >= CONQUER_COOLDOWN then
-            sendTroopsToPoint(koth, CONFIG.AutoConquer.ArmyIndex)
+            local fired = sendTroopsToPoint(koth, CONFIG.AutoConquer.ArmyIndex)
             raidFiredAt = tick()
+            if fired then
+                deploysSent = deploysSent + 1
+                deployedThisRaid = true
+                logEvent("Deploy sent (normal, army " .. tostring(CONFIG.AutoConquer.ArmyIndex) .. ")")
+            else
+                logEvent("Normal deploy SKIPPED (no armyIndex)")
+            end
+            updateLogStats()
         end
     end
 end)
@@ -1568,6 +1608,8 @@ end)
 task.spawn(function()
     local lastToxicKoth    = nil
     local toxicRaidFiredAt = 0
+    local deployedThisRaid = false
+    local capturedLogged   = false
     while true do
         jwait(3)
         local toxicKoth = getToxicKingOfTheHillBase()
@@ -1577,23 +1619,46 @@ task.spawn(function()
             updateRaidLabel()
             if isActive then
                 notifyUser("Toxic Raid", "Toxic raid event is now active!")
+                toxicRaidsDetected = toxicRaidsDetected + 1
+                logEvent("Toxic raid detected")
+                updateLogStats()
             else
                 notifyUser("Toxic Raid", "Toxic raid event ended.")
                 lastToxicKoth    = nil
                 toxicRaidFiredAt = 0
+                deployedThisRaid = false
+                capturedLogged   = false
             end
         end
         if not CONFIG.AutoToxicRaid.Enabled or not isActive then continue end
-        if toxicKoth:GetAttribute("Owner") == player.Name then continue end
+        if toxicKoth:GetAttribute("Owner") == player.Name then
+            if deployedThisRaid and not capturedLogged then
+                capturedLogged = true
+                capturesSucceeded = capturesSucceeded + 1
+                logEvent("Toxic raid CAPTURED")
+                updateLogStats()
+            end
+            continue
+        end
         if lastToxicKoth ~= toxicKoth then
             lastToxicKoth = toxicKoth
+            deployedThisRaid = false
+            capturedLogged   = false
             notifyUser("Auto Toxic Raid", "Toxic raid detected! Teleporting...")
             teleportToInstance(toxicKoth)
             task.wait(1)
         end
         if tick() - toxicRaidFiredAt >= CONQUER_COOLDOWN then
-            sendTroopsToToxicPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
+            local fired = sendTroopsToToxicPoint(toxicKoth, CONFIG.AutoConquer.ArmyIndex)
             toxicRaidFiredAt = tick()
+            if fired then
+                deploysSent = deploysSent + 1
+                deployedThisRaid = true
+                logEvent("Deploy sent (toxic, army " .. tostring(CONFIG.AutoConquer.ArmyIndex) .. ")")
+            else
+                logEvent("Toxic deploy SKIPPED (no armyIndex)")
+            end
+            updateLogStats()
         end
     end
 end)
